@@ -9,7 +9,7 @@ const app = express();
 const port = process.env.PORT || 3001;
 
 // Configure CORS. In production set FRONTEND_URL env var (or add allowed origins here).
-const allowedOrigins = [process.env.FRONTEND_URL || 'https://dro-nc15.onrender.com', 'http://localhost:5173'];
+const allowedOrigins = [process.env.FRONTEND_URL || 'https://dro-nc15.onrender.com', 'http://localhost:5173', 'https://skydrop-project.netlify.app', 'https://dro-1-am4x.onrender.com'];
 app.use(cors({
   origin: (origin, callback) => {
     // allow non browser tools (curl, Postman) when origin is undefined
