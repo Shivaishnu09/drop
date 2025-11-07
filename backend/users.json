@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "email": "khudeshivam33@gmail.com",
+    "password": "123456",
+    "username": "admin"
+  },
+  {
+    "id": 2,
+    "email": "khudeshivam31@gmail.com",
+    "password": "123456",
+    "username": "shiv"
+  },
+  {
+    "id": 3,
+    "email": "khudeshiam31@gamil.com",
+    "password": "123456",
+    "username": "shivam"
+  },
+  {
+    "id": 4,
+    "email": "pubgkingsk32@gmail.com",
+    "password": "123456",
+    "username": "shiv"
+  }
+]
