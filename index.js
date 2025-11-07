@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -7,7 +6,9 @@ const fs = require('fs');
 const crypto = require('crypto');
 
 const app = express();
-const port = 3001;
+
+// ✅ Use dynamic port for Railway / Render
+const port = process.env.PORT || 8080;
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -28,13 +29,13 @@ const sessions = {};
 // Multer setup for file uploads
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, 'uploads/')
+    cb(null, 'uploads/');
   },
   filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname)
+    cb(null, Date.now() + '-' + file.originalname);
   }
 });
-const upload = multer({ 
+const upload = multer({
   storage: storage,
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB
 });
@@ -47,6 +48,7 @@ function generatePassword() {
   return Math.random().toString(36).substring(2, 10);
 }
 
+// ✅ Routes
 app.post('/signup', (req, res) => {
   const { email, password, username } = req.body;
   if (!email || !password) {
@@ -56,7 +58,12 @@ app.post('/signup', (req, res) => {
   if (userExists) {
     return res.status(400).json({ message: 'User already exists' });
   }
-  const newUser = { id: users.length + 1, email, password, username: username || email.split('@')[0] };
+  const newUser = {
+    id: users.length + 1,
+    email,
+    password,
+    username: username || email.split('@')[0]
+  };
   users.push(newUser);
   fs.writeFileSync(usersFilePath, JSON.stringify(users, null, 2));
   res.status(201).json({ message: 'User created successfully' });
@@ -103,7 +110,7 @@ app.post('/rooms', (req, res) => {
     room_code: generateRoomCode(),
     room_password: generatePassword(),
     host_id,
-    expires_at: new Date(Date.now() + 30 * 60 * 1000), // 30 minutes
+    expires_at: new Date(Date.now() + 30 * 60 * 1000),
     is_active: true,
     participants: [host_id]
   };
@@ -129,48 +136,55 @@ app.get('/rooms/:id', (req, res) => {
   if (!room) {
     return res.status(404).json({ message: 'Room not found' });
   }
-
   const roomFiles = files.filter(f => f.room_id === roomId);
   const roomParticipants = users.filter(u => room.participants.includes(u.id));
-
   res.json({ ...room, files: roomFiles, participants: roomParticipants });
 });
 
 app.post('/rooms/:id/upload', upload.array('files'), (req, res) => {
-  const roomId = parseInt(req.params.id, 10);
-  const userId = parseInt(req.body.user_id, 10);
+  try {
+    const roomId = parseInt(req.params.id, 10);
+    const userId = parseInt(req.body.user_id, 10);
 
-  req.files.forEach(file => {
-    const newFile = {
-      id: files.length + 1,
-      room_id: roomId,
-      sender_id: userId,
-      file_name: file.originalname,
-      file_size: file.size,
-      file_type: file.mimetype,
-      file_url: `http://localhost:3001/uploads/${file.filename}`,
-      sent_at: new Date().toISOString(),
-    };
-    files.push(newFile);
-  });
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ message: 'No files were uploaded.' });
+    }
 
-  res.status(201).json({ message: 'Files uploaded successfully' });
+    req.files.forEach(file => {
+      const newFile = {
+        id: files.length + 1,
+        room_id: roomId,
+        sender_id: userId,
+        file_name: file.originalname,
+        file_size: file.size,
+        file_type: file.mimetype,
+        // ✅ Use dynamic backend URL
+        file_url: `${req.protocol}://${req.get('host')}/uploads/${file.filename}`,
+        sent_at: new Date().toISOString(),
+      };
+      files.push(newFile);
+    });
+
+    res.status(201).json({ message: 'Files uploaded successfully', files: req.files });
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ message: 'Error uploading files', error: error.message });
+  }
 });
 
 app.get('/download/:filename', (req, res) => {
   const { filename } = req.params;
   const filePath = path.join(__dirname, 'uploads', filename);
-  res.download(filePath, (err) => {
-    if (err) {
-      res.status(404).json({ message: "File not found" });
-    }
+  res.download(filePath, err => {
+    if (err) res.status(404).json({ message: 'File not found' });
   });
 });
 
 app.get('/', (req, res) => {
-  res.send('Hello from the backend!');
+  res.send('Backend is running successfully 🚀');
 });
 
+// ✅ Important: use process.env.PORT
 app.listen(port, () => {
-  console.log(`Backend server listening at http://localhost:${port}`);
+  console.log(`✅ Backend running on port ${port}`);
 });
