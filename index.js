@@ -6,40 +6,51 @@ const fs = require('fs');
 const crypto = require('crypto');
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 8080;
 
-// Configure CORS. In production set FRONTEND_URL env var (or add allowed origins here).
-const allowedOrigins = [process.env.FRONTEND_URL || 'https://dro-nc15.onrender.com', 'http://localhost:5173', 'https://skydrop-project.netlify.app', 'https://dro-1-am4x.onrender.com'];
+// ✅ FIXED CORS CONFIGURATION
+const allowedOrigins = [
+  process.env.FRONTEND_URL || 'https://dro-nc15.onrender.com',
+  process.env.NETLIFY_URL || 'https://skydrop-project.netlify.app',
+  'http://localhost:5173',
+  'https://dro-1-am4x.onrender.com'
+];
+
 app.use(cors({
-  origin: (origin, callback) => {
-    // allow non browser tools (curl, Postman) when origin is undefined
+  origin: function (origin, callback) {
+    // Allow requests with no origin (e.g. curl, Postman)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1) return callback(null, true);
-    // fallback: allow request (you can change to callback(new Error('Not allowed by CORS')) to lock down)
-    return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    console.log('❌ Blocked by CORS:', origin);
+    // Strict: reject other origins
+    return callback(new Error('Not allowed by CORS'));
   },
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  credentials: true,
+}));
+
+// Ensure OPTIONS preflight requests receive the CORS headers
+app.options('*', cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// ✅ Define Render-safe uploads directory first
-const uploadsDir = path.join('/tmp', 'uploads'); // <-- changed from __dirname/uploads to /tmp/uploads
+// ✅ Ensure uploads directory exists
+const uploadsDir = path.join('/tmp', 'uploads'); // Render-safe writable directory
 if (!fs.existsSync(uploadsDir)) {
-  try {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-    console.log('✅ Created uploads directory at', uploadsDir);
-  } catch (err) {
-    console.error('❌ Failed to create uploads directory:', err);
-  }
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  console.log('✅ Created uploads directory at', uploadsDir);
 }
+app.use('/uploads', express.static(uploads.Dir));
 
-// ✅ Serve uploads as static
-app.use('/uploads', express.static(uploadsDir));
-
-// Load or initialize users file
+// ✅ File-based storage for demo
 const usersFilePath = path.join(__dirname, 'users.json');
 let users = [];
 if (fs.existsSync(usersFilePath)) {
@@ -50,21 +61,14 @@ const rooms = [];
 const files = [];
 const sessions = {};
 
-// Multer configuration
+// ✅ Multer setup
 const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadsDir); // use /tmp/uploads
-  },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname);
-  }
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 });
-const upload = multer({
-  storage: storage,
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
-});
+const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 
-// Generate room codes & passwords
+// Helper functions
 function generateRoomCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
@@ -75,7 +79,8 @@ function generatePassword() {
 // 🧠 Signup
 app.post('/signup', (req, res) => {
   const { email, password, username } = req.body;
-  if (!email || !password) return res.status(400).json({ message: 'Email and password are required' });
+  if (!email || !password) return res.status(400).json({ message: 'Email and password required' });
+
   const userExists = users.find(u => u.email === email);
   if (userExists) return res.status(400).json({ message: 'User already exists' });
 
@@ -90,22 +95,24 @@ app.post('/login', (req, res) => {
   const { email, password } = req.body;
   const user = users.find(u => u.email === email && u.password === password);
   if (!user) return res.status(401).json({ message: 'Invalid credentials' });
+
   const token = crypto.randomBytes(16).toString('hex');
   sessions[token] = user.id;
   res.json({ message: 'Logged in successfully', token, user });
 });
 
+// Logout
 app.post('/logout', (req, res) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (token && sessions[token]) delete sessions[token];
   res.json({ message: 'Logged out successfully' });
 });
 
+// Auth check
 app.get('/me', (req, res) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (token && sessions[token]) {
-    const userId = sessions[token];
-    const user = users.find(u => u.id === userId);
+    const user = users.find(u => u.id === sessions[token]);
     if (user) return res.json(user);
   }
   res.status(401).json({ message: 'Unauthorized' });
@@ -121,7 +128,7 @@ app.post('/rooms', (req, res) => {
     host_id,
     expires_at: new Date(Date.now() + 30 * 60 * 1000),
     is_active: true,
-    participants: [host_id]
+    participants: [host_id],
   };
   rooms.push(newRoom);
   res.status(201).json(newRoom);
@@ -146,18 +153,14 @@ app.get('/rooms/:id', (req, res) => {
 
 // 🧠 Upload
 app.post('/rooms/:id/upload', upload.array('files'), (req, res) => {
-  const roomId = parseInt(req.params.id, 10);
-  const userId = parseInt(req.body.user_id, 10);
-
   try {
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({ message: 'No files uploaded' });
-    }
+    const roomId = parseInt(req.params.id, 10);
+    const userId = parseInt(req.body.user_id, 10);
+
+    if (!req.files || req.files.length === 0)
+      return res.status(400).json({ message: 'No files uploaded.' });
 
     req.files.forEach(file => {
-      const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
-      const fileUrl = `${baseUrl}/uploads/${file.filename}`;
-
       const newFile = {
         id: files.length + 1,
         room_id: roomId,
@@ -165,20 +168,20 @@ app.post('/rooms/:id/upload', upload.array('files'), (req, res) => {
         file_name: file.originalname,
         file_size: file.size,
         file_type: file.mimetype,
-        file_url: fileUrl,
+        file_url: `${req.protocol}://${req.get('host')}/uploads/${file.filename}`,
         sent_at: new Date().toISOString(),
       };
       files.push(newFile);
     });
 
     res.status(201).json({ message: 'Files uploaded successfully' });
-  } catch (err) {
-    console.error('Upload error:', err);
-    res.status(500).json({ message: 'Internal server error during file upload', error: err.message });
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ message: 'Error uploading files', error: error.message });
   }
 });
 
-// 🧠 Download
+// Download
 app.get('/download/:filename', (req, res) => {
   const filePath = path.join(uploadsDir, req.params.filename);
   res.download(filePath, err => {
@@ -186,6 +189,8 @@ app.get('/download/:filename', (req, res) => {
   });
 });
 
-// Root
-app.get('/', (req, res) => res.send('Hello from the backend!'));
-app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
+// Root route
+app.get('/', (req, res) => res.send('Backend is running successfully 🚀'));
+
+// Start server
+app.listen(port, () => console.log(`✅ Backend running on port ${port}`));
