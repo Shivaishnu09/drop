@@ -12,8 +12,7 @@ const app = express();
 const port = process.env.PORT || 3001;
 
 // ✅ MongoDB Atlas Connection (clean + fixed)
-const uri =
-  "mongodb+srv://khudeshivam33_db_user:vpIIvOEfkLYk15Un@cluster0.xue4pfv.mongodb.net/skydrop?retryWrites=true&w=majority&tls=true";
+const uri = "mongodb+srv://khudeshivam33_db_user:vpIIvOEfkLYk15Un@cluster0.xue4pfv.mongodb.net/skydrop?retryWrites=true&w=majority";
 
 const client = new MongoClient(uri);
 let db;
