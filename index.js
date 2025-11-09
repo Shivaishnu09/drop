@@ -1,219 +1,263 @@
+// 🌤️ SkyDrop Backend (MongoDB + Express + Multer)
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { MongoClient, ObjectId } = require('mongodb');
 
 const app = express();
 const port = process.env.PORT || 3001;
 
-// ✅ Allowed frontend origins
+// ✅ MongoDB Atlas Connection (hardcoded for simplicity)
+const uri = "mongodb+srv://khudeshivam33_db_user:vpIIvOEfkLYk15Un@cluster0.jsvlcxm.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
+
+const client = new MongoClient(uri);
+let db;
+
+async function connectDB() {
+  try {
+    await client.connect();
+    db = client.db('skydrop'); // Database name
+    console.log('✅ Connected to MongoDB Atlas');
+  } catch (err) {
+    console.error('❌ MongoDB connection failed:', err);
+    process.exit(1);
+  }
+}
+connectDB();
+
+// ✅ CORS setup (for Netlify frontend)
 const allowedOrigins = [
-  'https://skydrop-project.netlify.app', // Live frontend
-  'http://localhost:5173' // Local dev
+  'https://skydrop-flieshare.netlify.app',
+  'http://localhost:5173'
 ];
 
-// ✅ CORS setup
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      if (!origin) return callback(null, true); // allow mobile apps / curl
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      } else {
-        console.warn('❌ Blocked by CORS:', origin);
-        return callback(new Error('Not allowed by CORS'));
-      }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-  })
-);
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) callback(null, true);
+    else callback(null, true); // allow all temporarily
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  credentials: true
+}));
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// ✅ Render-safe uploads directory (/tmp is writable on Render)
-const uploadsDir = path.join('/tmp', 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  try {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-    console.log('✅ Created uploads directory at', uploadsDir);
-  } catch (err) {
-    console.error('❌ Failed to create uploads directory:', err);
-  }
-}
+// ✅ Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 app.use('/uploads', express.static(uploadsDir));
 
-// ✅ File-based user store
-const usersFilePath = path.join(__dirname, 'users.json');
-let users = [];
-if (fs.existsSync(usersFilePath)) {
-  users = JSON.parse(fs.readFileSync(usersFilePath));
-}
-
-const rooms = [];
-const files = [];
-const sessions = {};
-
-// ✅ Multer setup for file uploads
+// ✅ Multer setup
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 });
-const upload = multer({
-  storage,
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
-});
+const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 
-// ✅ Utility functions
-const generateRoomCode = () =>
-  Math.random().toString(36).substring(2, 8).toUpperCase();
-const generatePassword = () => Math.random().toString(36).substring(2, 10);
+// 🔑 Helper functions
+function generateRoomCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+function generatePassword() {
+  return Math.random().toString(36).substring(2, 10);
+}
 
 // 🧠 Signup
-app.post('/signup', (req, res) => {
-  const { email, password, username } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ message: 'Email and password are required' });
+app.post('/signup', async (req, res) => {
+  try {
+    const { email, password, username } = req.body;
+    if (!email || !password)
+      return res.status(400).json({ message: 'Email and password are required' });
 
-  const userExists = users.find(u => u.email === email);
-  if (userExists)
-    return res.status(400).json({ message: 'User already exists' });
+    const existingUser = await db.collection('users').findOne({ email });
+    if (existingUser)
+      return res.status(400).json({ message: 'User already exists' });
 
-  const newUser = {
-    id: users.length + 1,
-    email,
-    password,
-    username: username || email.split('@')[0]
-  };
-  users.push(newUser);
-  fs.writeFileSync(usersFilePath, JSON.stringify(users, null, 2));
-  res.status(201).json({ message: 'User created successfully' });
-});
-
-// 🧠 Login
-app.post('/login', (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ message: 'Email and password are required' });
-
-  const user = users.find(u => u.email === email && u.password === password);
-  if (!user)
-    return res.status(401).json({ message: 'Invalid credentials' });
-
-  const token = crypto.randomBytes(16).toString('hex');
-  sessions[token] = user.id;
-  res.json({ message: 'Logged in successfully', token, user });
-});
-
-// 🧠 Logout
-app.post('/logout', (req, res) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (token && sessions[token]) delete sessions[token];
-  res.json({ message: 'Logged out successfully' });
-});
-
-// 🧠 Current user
-app.get('/me', (req, res) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (token && sessions[token]) {
-    const userId = sessions[token];
-    const user = users.find(u => u.id === userId);
-    if (user) return res.json(user);
+    const newUser = { email, password, username: username || email.split('@')[0] };
+    await db.collection('users').insertOne(newUser);
+    res.status(201).json({ message: 'User created successfully' });
+  } catch (err) {
+    console.error("Signup error:", err);
+    res.status(500).json({ message: 'Internal server error' });
   }
-  res.status(401).json({ message: 'Unauthorized' });
 });
 
-// 🧠 Create Room
-app.post('/rooms', (req, res) => {
-  const { host_id } = req.body;
-  const newRoom = {
-    id: rooms.length + 1,
-    room_code: generateRoomCode(),
-    room_password: generatePassword(),
-    host_id,
-    expires_at: new Date(Date.now() + 30 * 60 * 1000),
-    is_active: true,
-    participants: [host_id]
-  };
-  rooms.push(newRoom);
-  res.status(201).json(newRoom);
+// 🔐 Login
+app.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password)
+      return res.status(400).json({ message: 'Email and password are required' });
+
+    const user = await db.collection('users').findOne({ email, password });
+    if (!user)
+      return res.status(401).json({ message: 'Invalid credentials' });
+
+    const token = crypto.randomBytes(16).toString('hex');
+    await db.collection('sessions').insertOne({
+      token,
+      user_id: user._id,
+      created_at: new Date()
+    });
+
+    res.json({ message: 'Logged in successfully', token, user });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 });
 
-// 🧠 Join Room
-app.post('/rooms/join', (req, res) => {
-  const { room_code, room_password, user_id } = req.body;
-  const room = rooms.find(
-    r =>
-      r.room_code === room_code &&
-      r.room_password === room_password &&
-      r.is_active
-  );
-  if (!room)
-    return res.status(404).json({ message: 'Invalid room code or password' });
-
-  if (!room.participants.includes(user_id))
-    room.participants.push(user_id);
-
-  res.json(room);
+// 🚪 Logout
+app.post('/logout', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token)
+      await db.collection('sessions').deleteOne({ token });
+    res.json({ message: 'Logged out successfully' });
+  } catch (err) {
+    console.error("Logout error:", err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 });
 
-// 🧠 Get Room Info
-app.get('/rooms/:id', (req, res) => {
-  const roomId = parseInt(req.params.id, 10);
-  const room = rooms.find(r => r.id === roomId);
-  if (!room) return res.status(404).json({ message: 'Room not found' });
+// 👤 Current user
+app.get('/me', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token)
+      return res.status(401).json({ message: 'Unauthorized' });
 
-  const roomFiles = files.filter(f => f.room_id === roomId);
-  const roomParticipants = users.filter(u =>
-    room.participants.includes(u.id)
-  );
+    const session = await db.collection('sessions').findOne({ token });
+    if (!session)
+      return res.status(401).json({ message: 'Unauthorized' });
 
-  res.json({ ...room, files: roomFiles, participants: roomParticipants });
+    const user = await db.collection('users').findOne({ _id: new ObjectId(session.user_id) });
+    if (!user)
+      return res.status(404).json({ message: 'User not found' });
+
+    res.json(user);
+  } catch (err) {
+    console.error("Get user error:", err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 });
 
-// 🧠 Upload Files
-app.post('/rooms/:id/upload', upload.array('files'), (req, res) => {
-  const roomId = parseInt(req.params.id, 10);
-  const userId = parseInt(req.body.user_id, 10);
-
-  if (!req.files || req.files.length === 0)
-    return res.status(400).json({ message: 'No files uploaded' });
-
-  const baseUrl =
-    process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
-
-  req.files.forEach(file => {
-    const newFile = {
-      id: files.length + 1,
-      room_id: roomId,
-      sender_id: userId,
-      file_name: file.originalname,
-      file_size: file.size,
-      file_type: file.mimetype,
-      file_url: `${baseUrl}/uploads/${file.filename}`,
-      sent_at: new Date().toISOString()
+// 🧩 Room Management
+app.post('/rooms', async (req, res) => {
+  try {
+    const { host_id } = req.body;
+    const newRoom = {
+      room_code: generateRoomCode(),
+      room_password: generatePassword(),
+      host_id,
+      expires_at: new Date(Date.now() + 30 * 60 * 1000),
+      is_active: true,
+      participants: [host_id]
     };
-    files.push(newFile);
-  });
-
-  res.status(201).json({ message: 'Files uploaded successfully' });
+    await db.collection('rooms').insertOne(newRoom);
+    res.status(201).json(newRoom);
+  } catch (err) {
+    console.error("Room create error:", err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 });
 
-// 🧠 File Download
+app.post('/rooms/join', async (req, res) => {
+  try {
+    const { room_code, room_password, user_id } = req.body;
+    const room = await db.collection('rooms').findOne({ room_code, room_password, is_active: true });
+    if (!room)
+      return res.status(404).json({ message: 'Invalid room code or password' });
+
+    if (!room.participants.includes(user_id)) {
+      await db.collection('rooms').updateOne(
+        { _id: room._id },
+        { $push: { participants: user_id } }
+      );
+    }
+    res.json(room);
+  } catch (err) {
+    console.error("Join room error:", err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/rooms/:id', async (req, res) => {
+  try {
+    const roomId = req.params.id;
+    const room = await db.collection('rooms').findOne({ _id: new ObjectId(roomId) });
+    if (!room)
+      return res.status(404).json({ message: 'Room not found' });
+
+    const roomFiles = await db.collection('files').find({ room_id: roomId }).toArray();
+    const roomParticipants = await db.collection('users')
+      .find({ _id: { $in: room.participants.map(id => new ObjectId(id)) } })
+      .toArray();
+
+    res.json({ ...room, files: roomFiles, participants: roomParticipants });
+  } catch (err) {
+    console.error("Get room error:", err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// 📤 File Upload
+app.post('/rooms/:id/upload', upload.array('files'), async (req, res) => {
+  try {
+    const roomId = req.params.id;
+    const userId = req.body.user_id;
+
+    if (!req.files || req.files.length === 0)
+      return res.status(400).json({ message: 'No files uploaded' });
+
+    const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+
+    for (const file of req.files) {
+      const newFile = {
+        room_id: roomId,
+        sender_id: userId,
+        file_name: file.originalname,
+        file_size: file.size,
+        file_type: file.mimetype,
+        file_url: `${baseUrl}/uploads/${file.filename}`,
+        sent_at: new Date().toISOString(),
+      };
+      await db.collection('files').insertOne(newFile);
+    }
+
+    res.status(201).json({ message: 'Files uploaded successfully' });
+  } catch (err) {
+    console.error("Upload error:", err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// 📥 Download
 app.get('/download/:filename', (req, res) => {
   const filePath = path.join(uploadsDir, req.params.filename);
-  res.download(filePath, err => {
+  res.download(filePath, (err) => {
     if (err) res.status(404).json({ message: 'File not found' });
   });
 });
 
-// Root endpoint
-app.get('/', (req, res) => res.send('Hello from the backend!'));
-
-app.listen(port, () => {
-  console.log(`🚀 Backend server running on port ${port}`);
+// 🧩 TEST — MongoDB Connection Checker
+app.get('/testdb', async (req, res) => {
+  try {
+    const test = await db.collection('test').insertOne({ message: 'MongoDB connected', time: new Date() });
+    res.json({ success: true, message: '✅ MongoDB connected successfully!', test });
+  } catch (err) {
+    console.error("DB Test Error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
+
+// 🌍 Root route
+app.get('/', (req, res) => res.send('Hello from MongoDB-powered SkyDrop 🚀'));
+
+// 🚀 Start server
+app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
