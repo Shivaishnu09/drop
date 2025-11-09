@@ -11,18 +11,27 @@ const { MongoClient, ObjectId } = require('mongodb');
 const app = express();
 const port = process.env.PORT || 3001;
 
-// ✅ MongoDB Atlas Connection (hardcoded)
-const uri = "mongodb+srv://khudeshivam33_db_user:vpIIvOEfkLYk15Un@cluster0.jsvlcxm.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
-const client = new MongoClient(uri);
+// ✅ MongoDB Atlas Connection (Final Fixed Version)
+const uri = "mongodb+srv://khudeshivam33_db_user:vpIIvOEfkLYk15Un@cluster0.xue4pfv.mongodb.net/skydrop?retryWrites=true&w=majority&tls=true";
+
+const client = new MongoClient(uri, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
+
 let db;
 
+// ✅ Connect before starting the server
 async function connectDB() {
   try {
     await client.connect();
-    db = client.db('skydrop');
-    console.log('✅ Connected to MongoDB Atlas');
+    db = client.db("skydrop");
+    console.log("✅ Connected to MongoDB Atlas");
+
+    // Start server only after DB connects
+    app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
   } catch (err) {
-    console.error('❌ MongoDB connection failed:', err);
+    console.error("❌ MongoDB connection failed:", err);
     process.exit(1);
   }
 }
@@ -37,7 +46,7 @@ const allowedOrigins = [
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin)) callback(null, true);
-    else callback(null, true);
+    else callback(null, true); // temporarily allow all
   },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   credentials: true
@@ -186,25 +195,6 @@ app.post('/rooms/join', async (req, res) => {
   }
 });
 
-app.get('/rooms/:id', async (req, res) => {
-  try {
-    const roomId = req.params.id;
-    const room = await db.collection('rooms').findOne({ _id: new ObjectId(roomId) });
-    if (!room)
-      return res.status(404).json({ message: 'Room not found' });
-
-    const roomFiles = await db.collection('files').find({ room_id: roomId }).toArray();
-    const roomParticipants = await db.collection('users')
-      .find({ _id: { $in: room.participants.map(id => new ObjectId(id)) } })
-      .toArray();
-
-    res.json({ ...room, files: roomFiles, participants: roomParticipants });
-  } catch (err) {
-    console.error("Get room error:", err);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
 // 📤 File Upload
 app.post('/rooms/:id/upload', upload.array('files'), async (req, res) => {
   try {
@@ -257,6 +247,3 @@ app.get('/testdb', async (req, res) => {
 
 // 🌍 Root route
 app.get('/', (req, res) => res.send('Hello from MongoDB-powered SkyDrop 🚀'));
-
-// 🚀 Start server
-app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
