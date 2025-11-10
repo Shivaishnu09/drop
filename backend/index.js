@@ -1,192 +1,176 @@
-// 🌤️ SkyDrop Backend (MongoDB + Supabase Storage + Express)
 
-const express = require("express");
-const cors = require("cors");
-const multer = require("multer");
-const path = require("path");
-const crypto = require("crypto");
-const { MongoClient, ObjectId } = require("mongodb");
-const { createClient } = require("@supabase/supabase-js");
-const fs = require("fs");
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = 3001;
 
-// ✅ MongoDB Atlas Connection
-const uri = "mongodb+srv://khudeshivam33_db_user:vpIIvOEfkLYk15Un@cluster0.xue4pfv.mongodb.net/skydrop?retryWrites=true&w=majority";
-const client = new MongoClient(uri);
-let db;
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ✅ Supabase Config
-const SUPABASE_URL = "https://slritsxdyrcktzyjjrau.supabase.co"; // ⬅️ replace with your real URL
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNscml0c3hkeXJja3R6eWpqcmF1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI2NjY2OTYsImV4cCI6MjA3ODI0MjY5Nn0.rAaZGg_6Ws5avTBqV7p0DqSn50DLLkVpIOT656HCVpg";
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-// ✅ Connect MongoDB
-async function connectDB() {
-  try {
-    await client.connect();
-    db = client.db("skydrop");
-    console.log("✅ Connected to MongoDB Atlas");
-
-    app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
-  } catch (err) {
-    console.error("❌ MongoDB connection failed:", err);
-    process.exit(1);
-  }
+// File-based store
+const usersFilePath = path.join(__dirname, 'users.json');
+let users = [];
+if (fs.existsSync(usersFilePath)) {
+  users = JSON.parse(fs.readFileSync(usersFilePath));
 }
-connectDB();
 
-// ✅ CORS setup
-app.use(cors({
-  origin: ["https://skydrop-flieshare.netlify.app", "http://localhost:5173"],
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  credentials: true
-}));
+const rooms = [];
+const files = [];
+const sessions = {};
 
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
-
-// ✅ Multer setup (temporary local)
-const upload = multer({ dest: "temp_uploads/", limits: { fileSize: 50 * 1024 * 1024 } });
-
-// 🔑 Helper functions
-const generateRoomCode = () => Math.random().toString(36).substring(2, 8).toUpperCase();
-const generatePassword = () => Math.random().toString(36).substring(2, 10);
-
-// 🧠 Signup
-app.post("/signup", async (req, res) => {
-  try {
-    const { email, password, username } = req.body;
-    if (!email || !password)
-      return res.status(400).json({ message: "Email and password are required" });
-
-    const existingUser = await db.collection("users").findOne({ email });
-    if (existingUser)
-      return res.status(400).json({ message: "User already exists" });
-
-    await db.collection("users").insertOne({
-      email,
-      password,
-      username: username || email.split("@")[0],
-    });
-
-    res.status(201).json({ message: "User created successfully" });
-  } catch (err) {
-    console.error("Signup error:", err);
-    res.status(500).json({ message: "Internal server error" });
+// Multer setup for file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/')
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + '-' + file.originalname)
   }
 });
-
-// 🔐 Login
-app.post("/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const user = await db.collection("users").findOne({ email, password });
-    if (!user) return res.status(401).json({ message: "Invalid credentials" });
-
-    const token = crypto.randomBytes(16).toString("hex");
-    await db.collection("sessions").insertOne({ token, user_id: user._id, created_at: new Date() });
-
-    res.json({ message: "Logged in successfully", token, user });
-  } catch (err) {
-    console.error("Login error:", err);
-    res.status(500).json({ message: "Internal server error" });
-  }
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
 });
 
-// 🚪 Logout
-app.post("/logout", async (req, res) => {
-  try {
-    const token = req.headers.authorization?.split(" ")[1];
-    if (token) await db.collection("sessions").deleteOne({ token });
-    res.json({ message: "Logged out successfully" });
-  } catch (err) {
-    res.status(500).json({ message: "Internal server error" });
+function generateRoomCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+function generatePassword() {
+  return Math.random().toString(36).substring(2, 10);
+}
+
+app.post('/signup', (req, res) => {
+  const { email, password, username } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Email and password are required' });
   }
+  const userExists = users.find(user => user.email === email);
+  if (userExists) {
+    return res.status(400).json({ message: 'User already exists' });
+  }
+  const newUser = { id: users.length + 1, email, password, username: username || email.split('@')[0] };
+  users.push(newUser);
+  fs.writeFileSync(usersFilePath, JSON.stringify(users, null, 2));
+  res.status(201).json({ message: 'User created successfully' });
 });
 
-// 👤 Current user
-app.get("/me", async (req, res) => {
-  try {
-    const token = req.headers.authorization?.split(" ")[1];
-    const session = await db.collection("sessions").findOne({ token });
-    if (!session) return res.status(401).json({ message: "Unauthorized" });
-
-    const user = await db.collection("users").findOne({ _id: new ObjectId(session.user_id) });
-    res.json(user);
-  } catch (err) {
-    res.status(500).json({ message: "Internal server error" });
+app.post('/login', (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Email and password are required' });
   }
+  const user = users.find(user => user.email === email && user.password === password);
+  if (!user) {
+    return res.status(401).json({ message: 'Invalid credentials' });
+  }
+  const token = crypto.randomBytes(16).toString('hex');
+  sessions[token] = user.id;
+  res.json({ message: 'Logged in successfully', token, user });
 });
 
-// 🧩 Room Management
-app.post("/rooms", async (req, res) => {
-  try {
-    const { host_id } = req.body;
-    const newRoom = {
-      room_code: generateRoomCode(),
-      room_password: generatePassword(),
-      host_id,
-      expires_at: new Date(Date.now() + 30 * 60 * 1000),
-      is_active: true,
-      participants: [host_id],
-    };
-    await db.collection("rooms").insertOne(newRoom);
-    res.status(201).json(newRoom);
-  } catch (err) {
-    res.status(500).json({ message: "Internal server error" });
+app.post('/logout', (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (token && sessions[token]) {
+    delete sessions[token];
   }
+  res.json({ message: 'Logged out successfully' });
 });
 
-// 📤 Supabase Upload
-app.post("/rooms/:id/upload", upload.array("files"), async (req, res) => {
-  try {
-    const roomId = req.params.id;
-    const userId = req.body.user_id;
-    if (!req.files || req.files.length === 0)
-      return res.status(400).json({ message: "No files uploaded" });
-
-    let uploadedFiles = [];
-
-    for (const file of req.files) {
-      const filePath = path.join(__dirname, file.path);
-      const supabaseFileName = `${Date.now()}_${file.originalname.replace(/\s+/g, "_")}`;
-
-      const { data, error } = await supabase.storage
-        .from("uploads")
-        .upload(supabaseFileName, fs.createReadStream(filePath), {
-          cacheControl: "3600",
-          upsert: false,
-          contentType: file.mimetype,
-        });
-
-      fs.unlinkSync(filePath); // remove temp file
-
-      if (error) throw error;
-
-      const { data: publicUrl } = supabase.storage.from("uploads").getPublicUrl(supabaseFileName);
-
-      const newFile = {
-        room_id: roomId,
-        sender_id: userId,
-        file_name: file.originalname,
-        file_size: file.size,
-        file_type: file.mimetype,
-        file_url: publicUrl.publicUrl,
-        sent_at: new Date().toISOString(),
-      };
-
-      await db.collection("files").insertOne(newFile);
-      uploadedFiles.push(newFile);
+app.get('/me', (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (token && sessions[token]) {
+    const userId = sessions[token];
+    const user = users.find(u => u.id === userId);
+    if (user) {
+      return res.json(user);
     }
-
-    res.status(201).json({ message: "Files uploaded to Supabase!", files: uploadedFiles });
-  } catch (err) {
-    console.error("Upload error:", err);
-    res.status(500).json({ message: err.message });
   }
+  res.status(401).json({ message: 'Unauthorized' });
 });
 
-// 🌍 Root
-app.get("/", (req, res) => res.send("☁️ SkyDrop with Supabase Storage + MongoDB is live!"));
+app.post('/rooms', (req, res) => {
+  const { host_id } = req.body;
+  const newRoom = {
+    id: rooms.length + 1,
+    room_code: generateRoomCode(),
+    room_password: generatePassword(),
+    host_id,
+    expires_at: new Date(Date.now() + 30 * 60 * 1000), // 30 minutes
+    is_active: true,
+    participants: [host_id]
+  };
+  rooms.push(newRoom);
+  res.status(201).json(newRoom);
+});
+
+app.post('/rooms/join', (req, res) => {
+  const { room_code, room_password, user_id } = req.body;
+  const room = rooms.find(r => r.room_code === room_code && r.room_password === room_password && r.is_active);
+  if (!room) {
+    return res.status(404).json({ message: 'Invalid room code or password' });
+  }
+  if (!room.participants.includes(user_id)) {
+    room.participants.push(user_id);
+  }
+  res.json(room);
+});
+
+app.get('/rooms/:id', (req, res) => {
+  const roomId = parseInt(req.params.id, 10);
+  const room = rooms.find(r => r.id === roomId);
+  if (!room) {
+    return res.status(404).json({ message: 'Room not found' });
+  }
+
+  const roomFiles = files.filter(f => f.room_id === roomId);
+  const roomParticipants = users.filter(u => room.participants.includes(u.id));
+
+  res.json({ ...room, files: roomFiles, participants: roomParticipants });
+});
+
+app.post('/rooms/:id/upload', upload.array('files'), (req, res) => {
+  const roomId = parseInt(req.params.id, 10);
+  const userId = parseInt(req.body.user_id, 10);
+
+  req.files.forEach(file => {
+    const newFile = {
+      id: files.length + 1,
+      room_id: roomId,
+      sender_id: userId,
+      file_name: file.originalname,
+      file_size: file.size,
+      file_type: file.mimetype,
+      file_url: `http://localhost:3001/uploads/${file.filename}`,
+      sent_at: new Date().toISOString(),
+    };
+    files.push(newFile);
+  });
+
+  res.status(201).json({ message: 'Files uploaded successfully' });
+});
+
+app.get('/download/:filename', (req, res) => {
+  const { filename } = req.params;
+  const filePath = path.join(__dirname, 'uploads', filename);
+  res.download(filePath, (err) => {
+    if (err) {
+      res.status(404).json({ message: "File not found" });
+    }
+  });
+});
+
+app.get('/', (req, res) => {
+  res.send('Hello from the backend!');
+});
+
+app.listen(port, () => {
+  console.log(`Backend server listening at http://localhost:${port}`);
+});
